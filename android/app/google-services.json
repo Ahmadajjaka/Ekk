@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "884929738685-pp19h63vo5rqvei8qnms16an6aqlcsvh.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.almamo.hardware",
+            "certificate_hash": "8dd44ab99510a008dc659fc1740a8cef4b1e9741"
+          }
+        },
+        {
           "client_id": "884929738685-g0k7ujn9o7p4m7t4kotal4edtgknuqgl.apps.googleusercontent.com",
           "client_type": 3
         }
