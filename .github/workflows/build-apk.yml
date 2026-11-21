@@ -1,3 +1,4 @@
+
 name: Build Android APK (خردوات المامو)
 
 on:
@@ -17,6 +18,12 @@ jobs:
     name: Build Signed Android APK
     runs-on: ubuntu-latest
 
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'almamo123456' }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'almamo' }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || 'almamo123456' }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -25,45 +32,47 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
-      - name: Setup Java 21 (Temurin)
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '21'
-          cache: 'gradle'
+          cache: gradle
 
-      - name: Install npm dependencies
-        run: npm ci
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
 
       - name: TypeScript check & unit tests
         run: |
-          npm run lint
+          bun run lint
           npx --yes tsx --test src/utils/*.test.ts src/services/*.test.ts
 
       - name: Cache deterministic APK signing keystore
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 == '' }}
+        if: ${{ env.ANDROID_KEYSTORE_BASE64 == '' }}
         uses: actions/cache@v4
         with:
           path: android/keystore
           key: almamo-release-keystore-v1
 
-      - name: Prepare Keystore & Extract SHA-1 / SHA-256 Fingerprints
+      - name: Prepare Keystore & Extract Fingerprints
         id: keystore
         shell: bash
         env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'almamo123456' }}
-          KEY_ALIAS_ENV: ${{ secrets.ANDROID_KEY_ALIAS || 'almamo' }}
-          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD || 'almamo123456' }}
+          KEYSTORE_B64: ${{ env.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ env.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS_ENV: ${{ env.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ env.ANDROID_KEY_PASSWORD }}
         run: |
+          set -e
           mkdir -p android/keystore
           KS_PATH="${{ github.workspace }}/android/keystore/almamo-release.jks"
 
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 --decode > "$KS_PATH"
-            echo "Using custom keystore from GitHub Secret ANDROID_KEYSTORE_BASE64"
           elif [ ! -f "$KS_PATH" ]; then
             keytool -genkeypair -v \
               -keystore "$KS_PATH" \
@@ -74,9 +83,6 @@ jobs:
               -keysize 2048 \
               -validity 10000 \
               -dname "CN=AlMamo Hardware, OU=StorePOS, O=AlMamo, L=Store, ST=Tech, C=SY"
-            echo "Generated persistent release keystore inside android/keystore/"
-          else
-            echo "Restored cached deterministic release keystore"
           fi
 
           {
@@ -86,14 +92,16 @@ jobs:
             echo "ALMAMO_KEY_PASSWORD=$KEY_PASS"
           } >> "$GITHUB_ENV"
 
-          CERT_INFO=$(keytool -list -v -keystore "$KS_PATH" -storepass "$KEYSTORE_PASS" -alias "$KEY_ALIAS_ENV")
-          SHA1=$(echo "$CERT_INFO" | grep -E "^\s*SHA1:" | head -n1 | sed 's/.*SHA1:\s*//' | tr -d ' ')
-          SHA256=$(echo "$CERT_INFO" | grep -E "^\s*SHA256:" | head -n1 | sed 's/.*SHA256:\s*//' | tr -d ' ')
+          CERT_INFO=$(keytool -list -v -keystore "$KS_PATH" \
+            -storepass "$KEYSTORE_PASS" -alias "$KEY_ALIAS_ENV")
+
+          SHA1=$(echo "$CERT_INFO" | grep -E 'SHA1:' | head -n1 | sed 's/.*SHA1:[[:space:]]*//' | tr -d ' ')
+          SHA256=$(echo "$CERT_INFO" | grep -E 'SHA256:' | head -n1 | sed 's/.*SHA256:[[:space:]]*//' | tr -d ' ')
 
           echo "sha1=$SHA1" >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
 
-          node -e "
+          SHA256_VAL="$SHA256" node -e "
             const fs = require('fs');
             const sha256 = process.env.SHA256_VAL;
             const payload = [{
@@ -105,25 +113,26 @@ jobs:
               }
             }];
             fs.mkdirSync('public/.well-known', { recursive: true });
-            fs.writeFileSync('public/.well-known/assetlinks.json', JSON.stringify(payload, null, 2) + '\n');
-          " SHA256_VAL="$SHA256"
+            fs.writeFileSync(
+              'public/.well-known/assetlinks.json',
+              JSON.stringify(payload, null, 2) + '\n'
+            );
+          "
 
           {
-            echo "## بصمات توقيع تطبيق خردوات المامو (APK Signing Fingerprints)"
-            echo "- **Package ID:** \`com.almamo.hardware\`"
-            echo "- **SHA-1:** \`$SHA1\`"
-            echo "- **SHA-256:** \`$SHA256\`"
-            echo ""
-            echo "> ملاحظة: التطبيق مضبوط للعمل تلقائياً مع Firebase عبر \`https://localhost\` داخل Capacitor بدون خطأ SHA-1 / \`DEVELOPER_ERROR\`. يمكنك نسخ SHA-1 أو SHA-256 أعلاه فقط إذا أردت تفعيل App Links أو ربط تطبيق Android إضافي في Firebase Console."
+            echo "## Android Signing Fingerprints"
+            echo "- Package ID: com.almamo.hardware"
+            echo "- SHA-1: $SHA1"
+            echo "- SHA-256: $SHA256"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build Web Bundle
         env:
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
-        run: npm run build
+        run: bun run build
 
       - name: Sync Web Bundle to Capacitor Android
-        run: npx cap sync android
+        run: bun run apk:sync
 
       - name: Build Signed Release APK
         working-directory: android
@@ -143,7 +152,7 @@ jobs:
           path: almamo-hardware-store.apk
           retention-days: 30
 
-      - name: Attach APK to GitHub Release (on v* tags)
+      - name: Attach APK to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
